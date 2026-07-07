@@ -102,4 +102,137 @@ def get_daily_temp(target_date):
     mm_dd = target_date.strftime("%m-%d")
     res_normal = df_normal[df_normal["month_day"] == mm_dd]
     if not res_normal.empty:
-        return res_normal.
+        return res_normal.iloc[0]["normal_temp"]
+    return 15.0
+
+# ==========================================
+# 3. メイン画面：タブ構成
+# ==========================================
+tab1, tab2 = st.tabs(["📊 期間指定で積算温度を計算", "🔮 開花日から到達日を逆算"])
+
+# --- タブ1: 期間指定計算 ---
+with tab1:
+    st.header("指定期間の積算温度")
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("開始日", value=datetime.date(today.year, 5, 1))
+    with col2:
+        end_date = st.date_input("終了日", value=today + datetime.timedelta(days=30))
+        
+    if start_date > end_date:
+        st.error("エラー: 開始日は終了日より前の日付を指定してください。")
+    else:
+        calc_date = start_date
+        dates_list, temps_list, types_list, accum_list = [], [], [], []
+        current_accum = 0.0
+        
+        while calc_date <= end_date:
+            base_t = get_daily_temp(calc_date)
+            adjusted_t = base_t + temp_adjust
+            final_t = adjusted_t if adjusted_t > base_line_temp else 0.0
+            current_accum += final_t
+            
+            dates_list.append(calc_date)
+            temps_list.append(final_t)
+            types_list.append("気象庁実況値" if calc_date <= today else "平年値（予測）")
+            accum_list.append(current_accum)
+            calc_date += datetime.timedelta(days=1)
+            
+        df_result = pd.DataFrame({
+            "日付": dates_list, 
+            "補正後気温(℃)": temps_list, 
+            "データ種別": types_list, 
+            "累積温度(℃·日)": accum_list
+        })
+        
+        st.metric(label=f"期間内の総積算温度 ({start_date} 〜 {end_date})", value=f"{current_accum:.1f} ℃・日")
+        
+        # 期間指定側も拡大縮小なしのAltairに変更
+        df_melted_tab1 = df_result.melt(id_vars=["日付"], value_vars=["累積温度(℃·日)"], var_name="指標", value_name="温度(℃·日)")
+        chart_tab1 = alt.Chart(df_melted_tab1).mark_line().encode(
+            x=alt.X("日付:T", title="日付"),
+            y=alt.Y("温度(℃·日):Q", title="積算温度 (℃・日)"),
+            color=alt.Color("指標:N")
+        ).properties(width=700, height=400).configure_selection(bind=None)
+        
+        st.altair_chart(chart_tab1, use_container_width=True)
+        st.dataframe(df_result, use_container_width=True)
+
+# --- タブ2: 到達日逆算 ---
+with tab2:
+    st.header("目標積算温度からの到達予想日逆算")
+    col3, col4 = st.columns(2)
+    with col3:
+        bloom_date = st.date_input("開花日（計算開始日）", value=datetime.date(today.year, 6, 1))
+    with col4:
+        target_temp = st.number_input("目標積算温度 (℃・日)", 100.0, 2000.0, 900.0, 50.0)
+        
+    calc_date = bloom_date
+    current_accum = 0.0
+    dates_list, accum_list, types_list = [], [], []
+    reached_date = None
+    
+    # 150日先までシミュレーション
+    for _ in range(150):
+        base_t = get_daily_temp(calc_date)
+        adjusted_t = base_t + temp_adjust
+        final_t = adjusted_t if adjusted_t > base_line_temp else 0.0
+        current_accum += final_t
+        
+        dates_list.append(calc_date)
+        accum_list.append(current_accum)
+        types_list.append("気象庁実況値" if calc_date <= today else "平年値（予測）")
+        
+        if current_accum >= target_temp and reached_date is None:
+            reached_date = calc_date
+        calc_date += datetime.timedelta(days=1)
+        
+    df_predict = pd.DataFrame({"日付": dates_list, "予測累積温度(℃·日)": accum_list, "データ種別": types_list})
+    
+    if reached_date:
+        days_from_bloom = (reached_date - bloom_date).days
+        days_from_today = (reached_date - today).days
+        
+        st.success(f"🎯 目標の {target_temp} ℃・日 に達するのは **{reached_date}** 頃と予想されます！")
+        
+        col_m1, col_m2 = st.columns(2)
+        with col_m1: 
+            st.metric("開花からの日数", f"{days_from_bloom} 日間")
+        with col_m2: 
+            st.metric("今日からの残り日数", f"あと {days_from_today} 日" if days_from_today >= 0 else "既に到達")
+        
+        st.subheader("目標到達までのシミュレーション曲線")
+        
+        # 目標線データを追加
+        df_predict["目標温度"] = target_temp
+        
+        # 可視化用にデータを変形
+        df_melted = df_predict.melt(
+            id_vars=["日付"], 
+            value_vars=["予測累積温度(℃·日)", "目標温度"],
+            var_name="指標", 
+            value_name="温度(℃·日)"
+        )
+        
+        # Y軸の上限を「目標値 + 200」に固定
+        y_max = float(target_temp + 200)
+
+        # 拡大縮小を無効化したAltairチャート
+        chart = alt.Chart(df_melted).mark_line().encode(
+            x=alt.X("日付:T", title="日付"),
+            y=alt.Y(
+                "温度(℃·日):Q", 
+                title="積算温度 (℃・日)", 
+                scale=alt.Scale(domain=[0, y_max], clamp=True)
+            ),
+            color=alt.Color("指標:N", scale=alt.Scale(range=["#1f77b4", "#ff7f0e"]))
+        ).properties(
+            width=700,
+            height=400
+        ).configure_selection(
+            bind=None  # マウスズーム・ドラッグ移動を完全に無効化
+        )
+
+        st.altair_chart(chart, use_container_width=True)
+    else:
+        st.warning("設定された期間内に目標積算温度に到達しませんでした。設定値を見直してください。")
