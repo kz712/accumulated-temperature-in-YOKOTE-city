@@ -147,15 +147,15 @@ with tab1:
         
         st.metric(label=f"期間内の総積算温度 ({start_date} 〜 {end_date})", value=f"{current_accum:.1f} ℃・日")
         
-        # 期間指定側も拡大縮小なしのAltairに変更
+        # 期間指定側：拡大縮小なしのAltair
         df_melted_tab1 = df_result.melt(id_vars=["日付"], value_vars=["累積温度(℃·日)"], var_name="指標", value_name="温度(℃·日)")
         chart_tab1 = alt.Chart(df_melted_tab1).mark_line().encode(
             x=alt.X("日付:T", title="日付"),
             y=alt.Y("温度(℃·日):Q", title="積算温度 (℃・日)"),
             color=alt.Color("指標:N")
-        ).properties(width=700, height=400).configure_selection(bind=None)
+        ).properties(width=700, height=400)
         
-        st.altair_chart(chart_tab1, use_container_width=True)
+        st.altair_chart(chart_tab1, use_container_width=True, theme="streamlit")
         st.dataframe(df_result, use_container_width=True)
 
 # --- タブ2: 到達日逆算 ---
@@ -217,7 +217,7 @@ with tab2:
         # Y軸の上限を「目標値 + 200」に固定
         y_max = float(target_temp + 200)
 
-        # 拡大縮小を無効化したAltairチャート
+        # 最新の Altair 5+ 準拠（静的表示、上限連動）
         chart = alt.Chart(df_melted).mark_line().encode(
             x=alt.X("日付:T", title="日付"),
             y=alt.Y(
@@ -229,10 +229,8 @@ with tab2:
         ).properties(
             width=700,
             height=400
-        ).configure_selection(
-            bind=None  # マウスズーム・ドラッグ移動を完全に無効化
         )
 
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True, theme="streamlit")
     else:
         st.warning("設定された期間内に目標積算温度に到達しませんでした。設定値を見直してください。")
