@@ -3,6 +3,25 @@ import datetime
 import pandas as pd
 import numpy as np
 import altair as alt
+import locale
+import os
+
+# ==========================================
+# 0. カレンダーの表記を日本語（数字の月）にするためのロケール設定
+# ==========================================
+def set_japanese_locale():
+    # 主要なOSの日本語環境ロケール名を順に試す
+    locales = ['ja_JP.UTF-8', 'ja_JP.utf8', 'ja_JP', 'japanese']
+    for loc in locales:
+        try:
+            locale.setlocale(locale.LC_ALL, loc)
+            return
+        except locale.Error:
+            continue
+    # Linux環境（Streamlit Cloud等）での環境変数強制設定
+    os.environ['LC_ALL'] = 'ja_JP.UTF-8'
+
+set_japanese_locale()
 
 # ページ設定
 st.set_page_config(page_title="横手市 積算温度算出・予測アプリ", layout="wide")
@@ -73,7 +92,6 @@ with st.spinner("気象庁から最新の横手市の気温データを取得中
 # 2. サイドバー設定・温度判定ロジック
 # ==========================================
 st.sidebar.header("⚙️ 共通設定")
-# 日付表示を「数字（月・日）」に明示的にフォーマット
 st.sidebar.info(f"本日の日付: {today.strftime('%Y年%m月%d日')}")
 
 temp_adjust = st.sidebar.slider(
@@ -146,13 +164,11 @@ with tab1:
             "累積温度(℃·日)": accum_list
         })
         
-        # 表示用の日付フォーマットを数字表記に統一
         df_result_display = df_result.copy()
         df_result_display["日付"] = pd.to_datetime(df_result_display["日付"]).dt.strftime("%Y/%m/%d")
         
         st.metric(label=f"期間内の総積算温度 ({start_date.strftime('%Y/%m/%d')} 〜 {end_date.strftime('%Y/%m/%d')})", value=f"{current_accum:.1f} ℃・日")
         
-        # 期間指定側：拡大縮小なしのAltair
         df_melted_tab1 = df_result.melt(id_vars=["日付"], value_vars=["累積温度(℃·日)"], var_name="指標", value_name="温度(℃·日)")
         chart_tab1 = alt.Chart(df_melted_tab1).mark_line().encode(
             x=alt.X("日付:T", title="日付", axis=alt.Axis(format="%m/%d")),
@@ -177,7 +193,6 @@ with tab2:
     dates_list, accum_list, types_list = [], [], []
     reached_date = None
     
-    # 150日先までシミュレーション
     for _ in range(150):
         base_t = get_daily_temp(calc_date)
         adjusted_t = base_t + temp_adjust
@@ -208,10 +223,7 @@ with tab2:
         
         st.subheader("目標到達までのシミュレーション曲線")
         
-        # 目標線データを追加
         df_predict["目標温度"] = target_temp
-        
-        # 可視化用にデータを変形
         df_melted = df_predict.melt(
             id_vars=["日付"], 
             value_vars=["予測累積温度(℃·日)", "目標温度"],
@@ -219,10 +231,8 @@ with tab2:
             value_name="温度(℃·日)"
         )
         
-        # Y軸の上限を「目標値 + 200」に固定
         y_max = float(target_temp + 200)
 
-        # 静的表示、上限連動、X軸の月日を数字フォーマット(%m/%d)に指定
         chart = alt.Chart(df_melted).mark_line().encode(
             x=alt.X("日付:T", title="日付", axis=alt.Axis(format="%m/%d")),
             y=alt.Y(
@@ -231,10 +241,7 @@ with tab2:
                 scale=alt.Scale(domain=[0, y_max], clamp=True)
             ),
             color=alt.Color("指標:N", scale=alt.Scale(range=["#1f77b4", "#ff7f0e"]))
-        ).properties(
-            width=700,
-            height=400
-        )
+        ).properties(width=700, height=400)
 
         st.altair_chart(chart, use_container_width=True, theme="streamlit")
     else:
