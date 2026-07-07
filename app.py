@@ -10,7 +10,6 @@ import os
 # 0. カレンダーの表記を日本語（数字の月）にするためのロケール設定
 # ==========================================
 def set_japanese_locale():
-    # 主要なOSの日本語環境ロケール名を順に試す
     locales = ['ja_JP.UTF-8', 'ja_JP.utf8', 'ja_JP', 'japanese']
     for loc in locales:
         try:
@@ -18,7 +17,6 @@ def set_japanese_locale():
             return
         except locale.Error:
             continue
-    # Linux環境（Streamlit Cloud等）での環境変数強制設定
     os.environ['LC_ALL'] = 'ja_JP.UTF-8'
 
 set_japanese_locale()
@@ -37,27 +35,21 @@ def fetch_yokote_actual_data(year):
     all_months_data = []
     current_month = datetime.date.today().month
     
-    # 1月から現在の月までループしてデータを取得
     for month in range(1, current_month + 1):
-        # 横手観測所（ prec_no=32:秋田県, block_no=0313:横手 ）
         url = f"https://www.data.jma.go.jp/stats/etrn/view/daily_a1.php?prec_no=32&block_no=0313&year={year}&month={month}&day=&view=p1"
         try:
-            # HTMLから表を抽出
             tables = pd.read_html(url)
             df_tables = tables[0]
             
-            # 気象庁の表構造から「日」と「平均気温」を抽出
             df_cleaned = pd.DataFrame({
-                "day": df_tables.iloc[:, 0],       # 1列目：日
-                "temp": df_tables.iloc[:, 4]       # 5列目：日平均気温
+                "day": df_tables.iloc[:, 0],       
+                "temp": df_tables.iloc[:, 4]       
             })
             
-            # ヘッダー行や数値化できない行を除外
             df_cleaned = df_cleaned[pd.to_numeric(df_cleaned['day'], errors='coerce').notnull()]
             df_cleaned['day'] = df_cleaned['day'].astype(int)
             df_cleaned['temp'] = pd.to_numeric(df_cleaned['temp'], errors='coerce')
             
-            # 日付型に変換
             df_cleaned['date'] = df_cleaned['day'].apply(lambda d: datetime.date(year, month, d))
             all_months_data.append(df_cleaned[['date', 'temp']])
         except Exception as e:
@@ -70,10 +62,7 @@ def fetch_yokote_actual_data(year):
 
 @st.cache_data
 def load_normal_data():
-    """
-    横手市の平年値データ（1991〜2020年基準）のシミュレーション数値
-    ※横手市の気候（冬は氷点下、8月ピークで25℃前後）を再現
-    """
+    """横手市の平年値シミュレーション数値"""
     normal_dates = pd.date_range(start="2026-01-01", end="2026-12-31")
     normal_temps = [11.5 - 13.5 * np.cos(2 * np.pi * (i - 25) / 365) for i in range(365)]
     df_normal = pd.DataFrame({
@@ -193,6 +182,7 @@ with tab2:
     dates_list, accum_list, types_list = [], [], []
     reached_date = None
     
+    # 予測日を特定するため、十分な期間（150日間）シミュレーションを実行
     for _ in range(150):
         base_t = get_daily_temp(calc_date)
         adjusted_t = base_t + temp_adjust
@@ -212,7 +202,6 @@ with tab2:
     if reached_date:
         days_from_bloom = (reached_date - bloom_date).days
         days_from_today = (reached_date - today).days
-        
         st.success(f"🎯 目標の {target_temp} ℃・日 に達するのは **{reached_date.strftime('%Y/%m/%d')}** 頃と予想されます！")
         
         col_m1, col_m2 = st.columns(2)
@@ -220,8 +209,8 @@ with tab2:
             st.metric("開花からの日数", f"{days_from_bloom} 日間")
         with col_m2: 
             st.metric("今日からの残り日数", f"あと {days_from_today} 日" if days_from_today >= 0 else "既に到達")
-        
-        st.subheader("目標到達までのシミュレーション曲線")
+            
+        st.subheader("目標到達までのシミュレーション曲線（予測日の前後10日間）")
         
         df_predict["目標温度"] = target_temp
         df_melted = df_predict.melt(
@@ -231,10 +220,35 @@ with tab2:
             value_name="温度(℃·日)"
         )
         
+        # 【修正点】横軸の最小値・最大値を「到達予想日の前後10日」に設定
+        start_graph_date = reached_date - datetime.timedelta(days=10)
+        end_graph_date = reached_date + datetime.timedelta(days=10)
+        
+        x_min = pd.Timestamp(start_graph_date).timestamp() * 1000
+        x_max = pd.Timestamp(end_graph_date).timestamp() * 1000
+        
+        # 5日ごとのミリ秒換算値
+        five_days_ms = 5 * 24 * 60 * 60 * 1000
+        
+        # 目盛（ticks）の位置を予測日を基準に5日刻み（計5箇所）で明示的に指定
+        tick_values = [
+            x_min,                          # 10日前
+            x_min + five_days_ms,           # 5日前
+            pd.Timestamp(reached_date).timestamp() * 1000, # 予測日（当日）
+            x_min + three_times := (five_days_ms * 3), # 5日後
+            x_max                           # 10日後
+        ]
+        
         y_max = float(target_temp + 200)
 
+        # グラフ描画
         chart = alt.Chart(df_melted).mark_line().encode(
-            x=alt.X("日付:T", title="日付", axis=alt.Axis(format="%m/%d")),
+            x=alt.X(
+                "日付:T", 
+                title="日付", 
+                scale=alt.Scale(domain=[x_min, x_max]),
+                axis=alt.Axis(format="%m/%d", values=tick_values)
+            ),
             y=alt.Y(
                 "温度(℃·日):Q", 
                 title="積算温度 (℃・日)", 
@@ -244,5 +258,6 @@ with tab2:
         ).properties(width=700, height=400)
 
         st.altair_chart(chart, use_container_width=True, theme="streamlit")
+        
     else:
-        st.warning("設定された期間内に目標積算温度に到達しませんでした。設定値を見直してください。")
+        st.warning("設定された期間内（150日以内）に目標積算温度に到達しませんでした。設定値を見直してください。")
