@@ -182,15 +182,14 @@ with tab2:
     dates_list, accum_list, types_list = [], [], []
     reached_date = None
     
-    # 予測日特定のために150日間シミュレーション
+    # 150日先までシミュレーション
     for _ in range(150):
         base_t = get_daily_temp(calc_date)
         adjusted_t = base_t + temp_adjust
         final_t = adjusted_t if adjusted_t > base_line_temp else 0.0
         current_accum += final_t
         
-        # グラフ側が日付を判別しやすいよう、datetime.date をタイムスタンプに直接マッピング
-        dates_list.append(pd.Timestamp(calc_date))
+        dates_list.append(calc_date)
         accum_list.append(current_accum)
         types_list.append("気象庁実況値" if calc_date <= today else "平年値（予測）")
         
@@ -203,6 +202,7 @@ with tab2:
     if reached_date:
         days_from_bloom = (reached_date - bloom_date).days
         days_from_today = (reached_date - today).days
+        
         st.success(f"🎯 目標の {target_temp} ℃・日 に達するのは **{reached_date.strftime('%Y/%m/%d')}** 頃と予想されます！")
         
         col_m1, col_m2 = st.columns(2)
@@ -210,10 +210,11 @@ with tab2:
             st.metric("開花からの日数", f"{days_from_bloom} 日間")
         with col_m2: 
             st.metric("今日からの残り日数", f"あと {days_from_today} 日" if days_from_today >= 0 else "既に到達")
-            
-        st.subheader("目標到達までのシミュレーション曲線（開花日 〜 予測日+10日）")
+        
+        st.subheader("目標到達までのシミュレーション曲線")
         
         df_predict["目標温度"] = target_temp
+        
         df_melted = df_predict.melt(
             id_vars=["日付"], 
             value_vars=["予測累積温度(℃·日)", "目標温度"],
@@ -221,47 +222,22 @@ with tab2:
             value_name="温度(℃·日)"
         )
         
-        # 軸の上限・下限の日付オブジェクトを特定
-        end_graph_date = reached_date + datetime.timedelta(days=10)
-        
-        # 【修正の本質】 確実にVega-liteが型認識できる「int型のUnixタイムスタンプ(ミリ秒)」を生成
-        x_min = int(pd.Timestamp(bloom_date).timestamp() * 1000)
-        x_max = int(pd.Timestamp(end_graph_date).timestamp() * 1000)
-        
-        # 5日ごとの目盛り位置（ミリ秒の整数）のリストを作成
-        total_days = (end_graph_date - bloom_date).days
-        tick_values = []
-        for i in range(0, total_days + 1, 5):
-            t_date = bloom_date + datetime.timedelta(days=i)
-            tick_values.append(int(pd.Timestamp(t_date).timestamp() * 1000))
-            
-        # 枠線ズレ防止のため、右端（予測日+10日）が5日刻みの端数になっても最終地点の目盛りを補完
-        if tick_values[-1] != x_max:
-            tick_values.append(x_max)
-            
         y_max = float(target_temp + 200)
 
-        # グラフ描画
+        # 初期状態の安定した設定（拡大縮小なし、軸は自動最適化）
         chart = alt.Chart(df_melted).mark_line().encode(
-            x=alt.X(
-                "日付:T", 
-                title="日付", 
-                scale=alt.Scale(domain=[x_min, x_max]),
-                axis=alt.Axis(
-                    format="%m/%d", 
-                    values=tick_values, # 純粋な整数型のタイムスタンプリストを流し込む
-                    labelAngle=-45
-                )
-            ),
+            x=alt.X("日付:T", title="日付", axis=alt.Axis(format="%m/%d")),
             y=alt.Y(
                 "温度(℃·日):Q", 
                 title="積算温度 (℃・日)", 
                 scale=alt.Scale(domain=[0, y_max], clamp=True)
             ),
             color=alt.Color("指標:N", scale=alt.Scale(range=["#1f77b4", "#ff7f0e"]))
-        ).properties(width=700, height=400)
+        ).properties(
+            width=700,
+            height=400
+        )
 
         st.altair_chart(chart, use_container_width=True, theme="streamlit")
-        
     else:
-        st.warning("設定された期間内（150日以内）に目標積算温度に到達しませんでした。設定値を見直してください。")
+        st.warning("設定された期間内に目標積算温度に到達しませんでした。設定値を見直してください。")
