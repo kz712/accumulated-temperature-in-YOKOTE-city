@@ -73,7 +73,8 @@ with st.spinner("気象庁から最新の横手市の気温データを取得中
 # 2. サイドバー設定・温度判定ロジック
 # ==========================================
 st.sidebar.header("⚙️ 共通設定")
-st.sidebar.info(f"本日の日付: {today}")
+# 日付表示を「数字（月・日）」に明示的にフォーマット
+st.sidebar.info(f"本日の日付: {today.strftime('%Y年%m月%d日')}")
 
 temp_adjust = st.sidebar.slider(
     "温度補正値 (℃)", 
@@ -115,9 +116,9 @@ with tab1:
     st.header("指定期間の積算温度")
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("開始日", value=datetime.date(today.year, 5, 1))
+        start_date = st.date_input("開始日", value=datetime.date(today.year, 5, 1), format="YYYY/MM/DD")
     with col2:
-        end_date = st.date_input("終了日", value=today + datetime.timedelta(days=30))
+        end_date = st.date_input("終了日", value=today + datetime.timedelta(days=30), format="YYYY/MM/DD")
         
     if start_date > end_date:
         st.error("エラー: 開始日は終了日より前の日付を指定してください。")
@@ -145,25 +146,29 @@ with tab1:
             "累積温度(℃·日)": accum_list
         })
         
-        st.metric(label=f"期間内の総積算温度 ({start_date} 〜 {end_date})", value=f"{current_accum:.1f} ℃・日")
+        # 表示用の日付フォーマットを数字表記に統一
+        df_result_display = df_result.copy()
+        df_result_display["日付"] = pd.to_datetime(df_result_display["日付"]).dt.strftime("%Y/%m/%d")
+        
+        st.metric(label=f"期間内の総積算温度 ({start_date.strftime('%Y/%m/%d')} 〜 {end_date.strftime('%Y/%m/%d')})", value=f"{current_accum:.1f} ℃・日")
         
         # 期間指定側：拡大縮小なしのAltair
         df_melted_tab1 = df_result.melt(id_vars=["日付"], value_vars=["累積温度(℃·日)"], var_name="指標", value_name="温度(℃·日)")
         chart_tab1 = alt.Chart(df_melted_tab1).mark_line().encode(
-            x=alt.X("日付:T", title="日付"),
+            x=alt.X("日付:T", title="日付", axis=alt.Axis(format="%m/%d")),
             y=alt.Y("温度(℃·日):Q", title="積算温度 (℃・日)"),
             color=alt.Color("指標:N")
         ).properties(width=700, height=400)
         
         st.altair_chart(chart_tab1, use_container_width=True, theme="streamlit")
-        st.dataframe(df_result, use_container_width=True)
+        st.dataframe(df_result_display, use_container_width=True)
 
 # --- タブ2: 到達日逆算 ---
 with tab2:
     st.header("目標積算温度からの到達予想日逆算")
     col3, col4 = st.columns(2)
     with col3:
-        bloom_date = st.date_input("開花日（計算開始日）", value=datetime.date(today.year, 6, 1))
+        bloom_date = st.date_input("開花日（計算開始日）", value=datetime.date(today.year, 6, 1), format="YYYY/MM/DD")
     with col4:
         target_temp = st.number_input("目標積算温度 (℃・日)", 100.0, 2000.0, 900.0, 50.0)
         
@@ -193,7 +198,7 @@ with tab2:
         days_from_bloom = (reached_date - bloom_date).days
         days_from_today = (reached_date - today).days
         
-        st.success(f"🎯 目標の {target_temp} ℃・日 に達するのは **{reached_date}** 頃と予想されます！")
+        st.success(f"🎯 目標の {target_temp} ℃・日 に達するのは **{reached_date.strftime('%Y/%m/%d')}** 頃と予想されます！")
         
         col_m1, col_m2 = st.columns(2)
         with col_m1: 
@@ -217,9 +222,9 @@ with tab2:
         # Y軸の上限を「目標値 + 200」に固定
         y_max = float(target_temp + 200)
 
-        # 最新の Altair 5+ 準拠（静的表示、上限連動）
+        # 静的表示、上限連動、X軸の月日を数字フォーマット(%m/%d)に指定
         chart = alt.Chart(df_melted).mark_line().encode(
-            x=alt.X("日付:T", title="日付"),
+            x=alt.X("日付:T", title="日付", axis=alt.Axis(format="%m/%d")),
             y=alt.Y(
                 "温度(℃·日):Q", 
                 title="積算温度 (℃・日)", 
