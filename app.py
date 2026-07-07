@@ -189,8 +189,8 @@ with tab2:
         final_t = adjusted_t if adjusted_t > base_line_temp else 0.0
         current_accum += final_t
         
-        # 後続の Altair 型整合のため、datetime.date から datetime.datetime 型に変形して保存
-        dates_list.append(datetime.datetime.combine(calc_date, datetime.time.min))
+        # グラフ側が日付を判別しやすいよう、datetime.date をタイムスタンプに直接マッピング
+        dates_list.append(pd.Timestamp(calc_date))
         accum_list.append(current_accum)
         types_list.append("気象庁実況値" if calc_date <= today else "平年値（予測）")
         
@@ -221,19 +221,23 @@ with tab2:
             value_name="温度(℃·日)"
         )
         
-        # グラフ表示枠の設定 (datetime.datetimeオブジェクトで定義)
-        dt_start = datetime.datetime.combine(bloom_date, datetime.time.min)
-        dt_end = datetime.datetime.combine(reached_date + datetime.timedelta(days=10), datetime.time.min)
+        # 軸の上限・下限の日付オブジェクトを特定
+        end_graph_date = reached_date + datetime.timedelta(days=10)
         
-        # 【原因解決】ミリ秒での指定を廃止し、明確に datetime オブジェクトのリストで目盛を作生成
-        total_days = (dt_end.date() - dt_start.date()).days
-        tick_dates = []
+        # 【修正の本質】 確実にVega-liteが型認識できる「int型のUnixタイムスタンプ(ミリ秒)」を生成
+        x_min = int(pd.Timestamp(bloom_date).timestamp() * 1000)
+        x_max = int(pd.Timestamp(end_graph_date).timestamp() * 1000)
+        
+        # 5日ごとの目盛り位置（ミリ秒の整数）のリストを作成
+        total_days = (end_graph_date - bloom_date).days
+        tick_values = []
         for i in range(0, total_days + 1, 5):
-            tick_dates.append(dt_start + datetime.timedelta(days=i))
+            t_date = bloom_date + datetime.timedelta(days=i)
+            tick_values.append(int(pd.Timestamp(t_date).timestamp() * 1000))
             
-        # 枠線ズレ防止のため最終日を補完
-        if tick_dates[-1] != dt_end:
-            tick_dates.append(dt_end)
+        # 枠線ズレ防止のため、右端（予測日+10日）が5日刻みの端数になっても最終地点の目盛りを補完
+        if tick_values[-1] != x_max:
+            tick_values.append(x_max)
             
         y_max = float(target_temp + 200)
 
@@ -242,10 +246,10 @@ with tab2:
             x=alt.X(
                 "日付:T", 
                 title="日付", 
-                scale=alt.Scale(domain=[dt_start, dt_end]),
+                scale=alt.Scale(domain=[x_min, x_max]),
                 axis=alt.Axis(
                     format="%m/%d", 
-                    values=[d.isoformat() for d in tick_dates], # ISOフォーマット文字列に変形してAltairに安全に橋渡し
+                    values=tick_values, # 純粋な整数型のタイムスタンプリストを流し込む
                     labelAngle=-45
                 )
             ),
