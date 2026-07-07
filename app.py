@@ -182,7 +182,7 @@ with tab2:
     dates_list, accum_list, types_list = [], [], []
     reached_date = None
     
-    # 予測日を特定するため、十分な期間（150日間）シミュレーションを実行
+    # 予測日をカバーするため十分な期間（150日間）計算
     for _ in range(150):
         base_t = get_daily_temp(calc_date)
         adjusted_t = base_t + temp_adjust
@@ -210,7 +210,7 @@ with tab2:
         with col_m2: 
             st.metric("今日からの残り日数", f"あと {days_from_today} 日" if days_from_today >= 0 else "既に到達")
             
-        st.subheader("目標到達までのシミュレーション曲線（予測日の前後10日間）")
+        st.subheader("目標到達までのシミュレーション曲線（開花日 〜 予測日+10日）")
         
         df_predict["目標温度"] = target_temp
         df_melted = df_predict.melt(
@@ -220,34 +220,37 @@ with tab2:
             value_name="温度(℃·日)"
         )
         
-        # 【修正点】横軸の最小値・最大値を「到達予想日の前後10日」に設定
-        start_graph_date = reached_date - datetime.timedelta(days=10)
+        # 【修正点】横軸の範囲を「開花日」から「予測日 + 10日」に設定
         end_graph_date = reached_date + datetime.timedelta(days=10)
         
-        x_min = pd.Timestamp(start_graph_date).timestamp() * 1000
+        x_min = pd.Timestamp(bloom_date).timestamp() * 1000
         x_max = pd.Timestamp(end_graph_date).timestamp() * 1000
         
-        # 5日ごとのミリ秒換算値
-        five_days_ms = 5 * 24 * 60 * 60 * 1000
+        # 開花日から「予測日+10日」までの全日数を算出し、5日刻みの目盛（明示的指定）リストを生成
+        total_days = (end_graph_date - bloom_date).days
+        tick_values = []
+        for i in range(0, total_days + 1, 5):
+            t_date = bloom_date + datetime.timedelta(days=i)
+            tick_values.append(pd.Timestamp(t_date).timestamp() * 1000)
         
-        # 目盛（ticks）の位置を予測日を基準に5日刻み（計5箇所）で明示的に指定
-        tick_values = [
-            x_min,                          # 10日前
-            x_min + five_days_ms,           # 5日前
-            pd.Timestamp(reached_date).timestamp() * 1000, # 予測日（当日）
-            x_min + three_times := (five_days_ms * 3), # 5日後
-            x_max                           # 10日後
-        ]
+        # もし右端（予測日+10日）が5日刻みのジャストに合わなければ、右端の目盛もリストの最後に追加して枠線を保証
+        if tick_values[-1] != x_max:
+            tick_values.append(x_max)
         
         y_max = float(target_temp + 200)
 
-        # グラフ描画
+        # グラフ描画設定
         chart = alt.Chart(df_melted).mark_line().encode(
             x=alt.X(
                 "日付:T", 
                 title="日付", 
                 scale=alt.Scale(domain=[x_min, x_max]),
-                axis=alt.Axis(format="%m/%d", values=tick_values)
+                axis=alt.Axis(
+                    format="%m/%d", 
+                    values=tick_values, 
+                    tickCount=len(tick_values),
+                    labelAngle=-45 # 日数が増えて文字が被るのを防ぐ斜め傾き表記
+                )
             ),
             y=alt.Y(
                 "温度(℃·日):Q", 
