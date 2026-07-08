@@ -5,6 +5,7 @@ import numpy as np
 import altair as alt
 import locale
 import os
+import requests
 
 # ==========================================
 # 0. カレンダーの表記を日本語（数字の月）にするためのロケール設定
@@ -23,12 +24,13 @@ set_japanese_locale()
 
 # ページ設定
 st.set_page_config(page_title="横手市 積算温度予測アプリ", layout="wide")
-st.title("🔮 横手市 積算温度・収穫予測アプリ")
-st.caption("気象庁のアメダス横手観測所（地点コード: 32596相当）から最新実況値を自動取得し、目標積算温度に到達する日を逆算予測します。")
+st.title("🔮 横手市 積算温度・収穫予測アプリ（週間予報連動型）")
+st.caption("気象庁のアメダス実況値に加え、最新の週間天気予報を自動取得して直近の予測精度を向上させています。")
 
 # ==========================================
-# 1. 【自動参照】気象庁データ＆平年値の読み込み
+# 1. 各種気象データの読み込み・自動取得
 # ==========================================
+
 @st.cache_data(ttl=21600)  # 6時間キャッシュ
 def fetch_yokote_actual_data(year):
     """気象庁のHPからアメダス横手（地点コード: 32596相当）の実況気温を自動取得する"""
@@ -60,6 +62,46 @@ def fetch_yokote_actual_data(year):
     else:
         return pd.DataFrame(columns=["date", "temp"])
 
+@st.cache_data(ttl=10800)  # 3時間キャッシュ（予報は1日3回更新されるため）
+def fetch_yokote_forecast_data():
+    """気象庁の天気予報APIから秋田県（横手地域含む内陸部）の週間予報データを取得し、日平均気温を近似計算する"""
+    forecast_dict = {}
+    try:
+        # 気象庁 週間予報JSON（秋田県: 050000）
+        url = "https://www.jma.go.jp/bosai/forecast/data/forecast/050000.json"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            # 週間予報パート（インデックス1）を抽出
+            week_data = data[1]
+            time_series = week_data["timeSeries"][1] # 気温のタイムシリーズ
+            
+            time_defines = time_series["timeDefines"] # 予報対象日（ISO形式）
+            # 横手を含むエリア（内陸部）の気温データを特定（通常は配列の特定要素、ここでは安全に検索）
+            temps_max = []
+            temps_min = []
+            
+            for area in time_series["areas"]:
+                if "横手" in area["area"]["name"] or "秋田" in area["area"]["name"]:
+                    temps_max = area.get("tempsMax", [])
+                    temps_min = area.get("tempsMin", [])
+                    break
+            if not temps_max: # 万が一見つからなければ先頭のエリア
+                temps_max = time_series["areas"][0].get("tempsMax", [])
+                temps_min = time_series["areas"][0].get("tempsMin", [])
+                
+            for i, time_str in enumerate(time_defines):
+                dt = datetime.datetime.fromisoformat(time_str).date()
+                # 予報から日平均気温を「(最高 + 最低) / 2」で近似計算
+                if i < len(temps_max) and i < len(temps_min):
+                    t_max = pd.to_numeric(temps_max[i], errors='coerce')
+                    t_min = pd.to_numeric(temps_min[i], errors='coerce')
+                    if not np.isnan(t_max) and not np.isnan(t_min):
+                        forecast_dict[dt] = (t_max + t_min) / 2.0
+    except Exception as e:
+        pass # エラー時は予報データが空になり、自動的に平年値へフォールバックします
+    return forecast_dict
+
 @st.cache_data
 def load_normal_data():
     """横手市の平年値シミュレーション数値"""
@@ -73,8 +115,9 @@ def load_normal_data():
 
 # データのロード
 today = datetime.date.today()
-with st.spinner("気象庁から最新の横手市の気温データを取得中..."):
+with st.spinner("気象庁から最新の実況および週間天気予報を取得中..."):
     df_actual = fetch_yokote_actual_data(today.year)
+    dict_forecast = fetch_yokote_forecast_data()
     df_normal = load_normal_data()
 
 # ==========================================
@@ -98,23 +141,31 @@ base_line_temp = st.sidebar.number_input(
     max_value=15.0, 
     value=0.0, 
     step=1.0,
-    help="日平均気温（補正後）がこの温度以下の日は、積算温度（℃・日）としてカウント（加算）されません。"
+    help="日平均気温（補正後）がこの温度以下の日は、積算温度としてカウントされません。"
 )
 
-def get_daily_temp(target_date):
-    if target_date <= today:
+# --- 3段階の気温割り当てロジック ---
+def get_daily_temp_with_forecast(target_date):
+    # 1. 昨日以前は「アメダス実況値」
+    if target_date < today:
         res = df_actual[df_actual["date"] == target_date]
         if not res.empty:
-            return res.iloc[0]["temp"]
-    
+            return res.iloc[0]["temp"], "気象庁実況値"
+            
+    # 2. 今日〜約7日先までは「週間天気予報」
+    if target_date in dict_forecast:
+        return dict_forecast[target_date], "週間天気予報"
+        
+    # 3. それ以降（またはデータ欠損時）は「平年値」
     mm_dd = target_date.strftime("%m-%d")
     res_normal = df_normal[df_normal["month_day"] == mm_dd]
     if not res_normal.empty:
-        return res_normal.iloc[0]["normal_temp"]
-    return 15.0
+        return res_normal.iloc[0]["normal_temp"], "平年値（予測）"
+        
+    return 15.0, "平年値（予測）"
 
 # ==========================================
-# 3. メイン画面：目標積算温度からの到達予想日逆算
+# 3. メイン画面：シミュレーション計算
 # ==========================================
 st.header("🎯 到達予想日の逆算シミュレーション")
 
@@ -122,7 +173,7 @@ col1, col2 = st.columns(2)
 with col1:
     bloom_date = st.date_input("開花日（計算開始日）", value=datetime.date(today.year, 6, 1), format="YYYY/MM/DD")
 with col2:
-    target_temp = st.number_input("目標積算温度 (℃・日)", 100.0, 2000.0, 900.0, 50.0, help="品種ごとの目標積算温度（例：大型スイカなら800〜1000℃・日程度）")
+    target_temp = st.number_input("目標積算温度 (℃・日)", 100.0, 2000.0, 900.0, 50.0)
 
 # 150日先まで予測シミュレーションを実行
 calc_date = bloom_date
@@ -131,17 +182,17 @@ dates_list, accum_list, types_list, daily_eff_temps = [], [], [], []
 reached_date = None
 
 for _ in range(150):
-    base_t = get_daily_temp(calc_date)
+    base_t, data_type = get_daily_temp_with_forecast(calc_date)
     adjusted_t = base_t + temp_adjust
     
-    # 【バグ修正】補正後気温が基準温度を超えている場合のみ、その当日の有効温度として加算（以下なら0度として処理）
+    # 基準温度判定
     final_t = adjusted_t if adjusted_t > base_line_temp else 0.0
     current_accum += final_t
     
     dates_list.append(calc_date)
     accum_list.append(current_accum)
     daily_eff_temps.append(final_t)
-    types_list.append("気象庁実況値" if calc_date <= today else "平年値（予測）")
+    types_list.append(data_type)
     
     if current_accum >= target_temp and reached_date is None:
         reached_date = calc_date
