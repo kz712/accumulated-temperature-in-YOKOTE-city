@@ -36,7 +36,6 @@ def fetch_yokote_actual_data(year):
     current_month = datetime.date.today().month
     
     for month in range(1, current_month + 1):
-        # 気象庁HPのURLパラメータ（prec_no=32:秋田県、block_no=0313:アメダス横手）
         url = f"https://www.data.jma.go.jp/stats/etrn/view/daily_a1.php?prec_no=32&block_no=0313&year={year}&month={month}&day=&view=p1"
         try:
             tables = pd.read_html(url)
@@ -99,7 +98,7 @@ base_line_temp = st.sidebar.number_input(
     max_value=15.0, 
     value=0.0, 
     step=1.0,
-    help="この温度以下の日は積算にカウントしません"
+    help="日平均気温（補正後）がこの温度以下の日は、積算温度（℃・日）としてカウント（加算）されません。"
 )
 
 def get_daily_temp(target_date):
@@ -128,24 +127,32 @@ with col2:
 # 150日先まで予測シミュレーションを実行
 calc_date = bloom_date
 current_accum = 0.0
-dates_list, accum_list, types_list = [], [], []
+dates_list, accum_list, types_list, daily_eff_temps = [], [], [], []
 reached_date = None
 
 for _ in range(150):
     base_t = get_daily_temp(calc_date)
     adjusted_t = base_t + temp_adjust
+    
+    # 【バグ修正】補正後気温が基準温度を超えている場合のみ、その当日の有効温度として加算（以下なら0度として処理）
     final_t = adjusted_t if adjusted_t > base_line_temp else 0.0
     current_accum += final_t
     
     dates_list.append(calc_date)
     accum_list.append(current_accum)
+    daily_eff_temps.append(final_t)
     types_list.append("気象庁実況値" if calc_date <= today else "平年値（予測）")
     
     if current_accum >= target_temp and reached_date is None:
         reached_date = calc_date
     calc_date += datetime.timedelta(days=1)
     
-df_predict = pd.DataFrame({"日付": dates_list, "予測累積温度(℃·日)": accum_list, "データ種別": types_list})
+df_predict = pd.DataFrame({
+    "日付": dates_list, 
+    "当日の有効積算温度(℃)": daily_eff_temps,
+    "予測累積温度(℃·日)": accum_list, 
+    "データ種別": types_list
+})
 
 # 結果の表示
 if reached_date:
@@ -189,6 +196,9 @@ if reached_date:
     with st.expander("詳細な日ごとの予測データ一覧を確認"):
         df_display = df_predict.copy()
         df_display["日付"] = pd.to_datetime(df_display["日付"]).dt.strftime("%Y/%m/%d")
-        st.dataframe(df_display[["日付", "予測累積温度(℃·日)", "データ種別"]], use_container_width=True)
+        st.dataframe(
+            df_display[["日付", "当日の有効積算温度(℃)", "予測累積温度(℃·日)", "データ種別"]], 
+            use_container_width=True
+        )
 else:
     st.warning("設定された期間内（150日以内）に目標積算温度に到達しませんでした。設定値を見直してください。")
